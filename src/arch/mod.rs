@@ -17,7 +17,34 @@ cfg_if::cfg_if! {
     }
 }
 cfg_if::cfg_if! {
-    if #[cfg(windows)] {
+    if #[cfg(target_os = "uefi")] {
+        // COFF
+        macro_rules! asm_function_begin {
+            ($name:literal) => {
+                concat!(
+                    ".globl ", asm_mangle!($name), "\n",
+                    ".def ", asm_mangle!($name), "\n",
+                    ".scl 2\n",
+                    ".type 32\n",
+                    ".endef ", asm_mangle!($name), "\n",
+                    asm_mangle!($name), ":\n",
+                )
+            };
+        }
+        macro_rules! asm_function_alt_entry {
+            ($name:literal) => {
+                asm_function_begin!($name)
+            };
+        }
+        macro_rules! asm_function_end {
+            ($name:literal) => {
+                ""
+            };
+        }
+        macro_rules! cfi_signal_frame {
+            () => { "" }
+        }
+    } else if #[cfg(windows)] {
         // COFF
         macro_rules! asm_function_begin {
             ($name:literal) => {
