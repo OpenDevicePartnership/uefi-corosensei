@@ -17,7 +17,7 @@ cfg_if::cfg_if! {
     }
 }
 cfg_if::cfg_if! {
-    if #[cfg(target_os = "uefi")] {
+    if #[cfg(any(target_os = "uefi", all(windows, not(teb))))] {
         // COFF
         macro_rules! asm_function_begin {
             ($name:literal) => {
@@ -167,7 +167,7 @@ unsafe fn allocate_obj_on_stack<T>(sp: &mut usize, sp_offset: usize, obj: T) {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(all(target_arch = "x86_64", not(windows)))] {
+    if #[cfg(all(target_arch = "x86_64", any(not(windows),not(teb))))] {
         mod x86_64;
         pub use self::x86_64::*;
     } else if #[cfg(all(target_arch = "x86_64", windows))] {
