@@ -57,19 +57,19 @@ pub unsafe trait Stack {
     /// On Windows, certain fields must be updated in the Thread Environment
     /// Block when switching to another stack. This function returns the values
     /// that must be assigned for this stack.
-    #[cfg(windows)]
+    #[cfg(teb)]
     fn teb_fields(&self) -> StackTebFields;
 
     /// Updates the stack's copy of TEB fields which may have changed while
     /// executing code on the stack.
-    #[cfg(windows)]
+    #[cfg(teb)]
     fn update_teb_fields(&mut self, stack_limit: usize, guaranteed_stack_bytes: usize);
 }
 
 /// Fields in the Thread Environment Block (TEB) which must be updated when
 /// switching to a different stack. These are the same fields that are updated
 /// by the `SwitchToFiber` function in the Windows API.
-#[cfg(windows)]
+#[cfg(teb)]
 #[derive(Clone, Copy, Debug)]
 #[allow(non_snake_case)]
 #[allow(missing_docs)]
@@ -94,13 +94,13 @@ unsafe impl<'a, S: Stack> Stack for &'a mut S {
     }
 
     #[inline]
-    #[cfg(windows)]
+    #[cfg(teb)]
     fn teb_fields(&self) -> StackTebFields {
         (**self).teb_fields()
     }
 
     #[inline]
-    #[cfg(windows)]
+    #[cfg(teb)]
     fn update_teb_fields(&mut self, stack_limit: usize, guaranteed_stack_bytes: usize) {
         (**self).update_teb_fields(stack_limit, guaranteed_stack_bytes)
     }

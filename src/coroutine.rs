@@ -7,7 +7,7 @@ use core::ptr;
 use crate::arch::{self, STACK_ALIGNMENT};
 #[cfg(feature = "default-stack")]
 use crate::stack::DefaultStack;
-#[cfg(windows)]
+#[cfg(teb)]
 use crate::stack::StackTebFields;
 use crate::stack::{self, StackPointer};
 use crate::trap::CoroutineTrapHandler;
@@ -435,7 +435,7 @@ impl<Input, Yield, Return, Stack: stack::Stack> Coroutine<Input, Yield, Return, 
             "cannot extract stack from an incomplete coroutine"
         );
 
-        #[cfg(windows)]
+        #[cfg(teb)]
         unsafe {
             arch::update_stack_teb_fields(&mut self.stack);
         }
@@ -477,7 +477,7 @@ impl<Input, Yield, Return, Stack: stack::Stack> Drop for Coroutine<Input, Yield,
         self.force_unwind();
         mem::forget(guard);
 
-        #[cfg(windows)]
+        #[cfg(teb)]
         unsafe {
             arch::update_stack_teb_fields(&mut self.stack);
         }
@@ -602,7 +602,7 @@ struct ParentStack {
     ///
     /// This is needed on Windows to access the saved TEB fields on the parent
     /// stack.
-    #[cfg(windows)]
+    #[cfg(teb)]
     stack_ptr: StackPointer,
 }
 
@@ -612,7 +612,7 @@ impl ParentStack {
         let stack_base = StackPointer::new_unchecked(stack_ptr.get() & !(STACK_ALIGNMENT - 1));
         Self {
             stack_base,
-            #[cfg(windows)]
+            #[cfg(teb)]
             stack_ptr,
         }
     }
@@ -633,13 +633,13 @@ unsafe impl stack::Stack for ParentStack {
     }
 
     #[inline]
-    #[cfg(windows)]
+    #[cfg(teb)]
     fn teb_fields(&self) -> StackTebFields {
         unsafe { arch::read_parent_stack_teb_fields(self.stack_ptr) }
     }
 
     #[inline]
-    #[cfg(windows)]
+    #[cfg(teb)]
     fn update_teb_fields(&mut self, stack_limit: usize, guaranteed_stack_bytes: usize) {
         unsafe {
             arch::update_parent_stack_teb_fields(

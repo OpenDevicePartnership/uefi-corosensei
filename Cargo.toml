@@ -41,7 +41,7 @@ criterion = "0.5.1"
 criterion-cycles-per-byte = "0.6.1"
 
 [features]
-default = ["default-stack", "unwind"]
+default = ["default-stack", "unwind",]
 
 # Provide a DefaultStack implementation. Requires std.
 default-stack = ["libc", "windows-sys"]
@@ -53,6 +53,9 @@ unwind = []
 # Use the may_unwind feature of inline assembly for unwinding. This is more
 # efficient but is only available on nightly Rust.
 asm-unwind = ["unwind"]
+
+# Enable TEB support on windows
+teb = []
 
 # Build docs for all supported targets.
 [package.metadata.docs.rs]
