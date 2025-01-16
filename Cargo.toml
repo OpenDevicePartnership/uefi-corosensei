@@ -1,5 +1,6 @@
 [package]
-name = "corosensei"
+name = "uefi_corosensei"
+publish = ["UefiRust"]
 version = "0.1.3"
 authors = ["Amanieu d'Antras <amanieu@gmail.com>"]
 description = "A fast and safe implementation of stackful coroutines"
