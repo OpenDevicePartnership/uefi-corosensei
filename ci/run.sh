@@ -7,7 +7,7 @@ if [ "${CROSS}" = "1" ]; then
     export CARGO_NET_RETRY=5
     export CARGO_NET_TIMEOUT=10
 
-    cargo install cross
+    cargo install cross --registry UefiRust
     CARGO=cross
 fi
 

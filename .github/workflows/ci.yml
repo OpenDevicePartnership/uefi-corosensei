@@ -42,6 +42,7 @@ jobs:
         CROSS: ${{ !startsWith(matrix.target, 'x86_64') && contains(matrix.target, 'linux') && '1' || '0' }}
         TARGET: ${{ matrix.target }}
         NO_RUN: ${{ matrix.no_run }}
+        CARGO_REGISTRIES_UEFIRUST_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
       run: sh ci/run.sh
 
     strategy:
