@@ -9,6 +9,24 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v2
+    - name: Setup Cred Provider
+      if: runner.os == 'Linux'
+      run: |
+        mkdir -p ~/.cargo
+        cat <<EOF >> ~/.cargo/config.toml
+        [registry]
+        global-credential-providers = ["cargo:token"]
+        EOF
+    - name: Setup Cred Provider
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $path = "$HOME\.cargo\config.toml"
+        New-Item -ItemType Directory -Force -Path "$HOME\.cargo" | Out-Null
+        "[registry]" | Out-File -Append -FilePath $path
+        'global-credential-providers = ["cargo:token"]' | Out-File -Append -FilePath $path
+    - name: Login to Registry
+      run: cargo login "${{ secrets.CRATES_IO_TOKEN }}" --registry UefiRust
     - uses: actions-rs/toolchain@v1
       with:
         toolchain: ${{ matrix.target == 'i686-pc-windows-gnu' && format('{0}-i686-pc-windows-gnu', matrix.channel) || matrix.channel }}
