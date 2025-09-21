@@ -7,7 +7,7 @@ use core::ptr;
 use crate::arch::{self, STACK_ALIGNMENT};
 #[cfg(feature = "default-stack")]
 use crate::stack::DefaultStack;
-#[cfg(teb)]
+#[cfg(feature = "teb")]
 use crate::stack::StackTebFields;
 use crate::stack::{self, StackPointer};
 use crate::trap::CoroutineTrapHandler;
@@ -312,7 +312,7 @@ impl<Input, Yield, Return, Stack: stack::Stack> Coroutine<Input, Yield, Return, 
     /// This can only be done safely if there are no objects currently on the
     /// coroutine's stack that need to execute `Drop` code.
     pub unsafe fn force_reset(&mut self) {
-        #[cfg(windows)]
+        #[cfg(feature = "teb")]
         if let Some(stack_ptr) = self.stack_ptr {
             if self.started() {
                 arch::reset_teb_fields_from_suspended(self.stack.base(), stack_ptr);
@@ -435,7 +435,7 @@ impl<Input, Yield, Return, Stack: stack::Stack> Coroutine<Input, Yield, Return, 
             "cannot extract stack from an incomplete coroutine"
         );
 
-        #[cfg(teb)]
+        #[cfg(feature = "teb")]
         unsafe {
             arch::update_stack_teb_fields(&mut self.stack);
         }
@@ -477,7 +477,7 @@ impl<Input, Yield, Return, Stack: stack::Stack> Drop for Coroutine<Input, Yield,
         self.force_unwind();
         mem::forget(guard);
 
-        #[cfg(teb)]
+        #[cfg(feature = "teb")]
         unsafe {
             arch::update_stack_teb_fields(&mut self.stack);
         }
@@ -602,7 +602,7 @@ struct ParentStack {
     ///
     /// This is needed on Windows to access the saved TEB fields on the parent
     /// stack.
-    #[cfg(teb)]
+    #[cfg(feature = "teb")]
     stack_ptr: StackPointer,
 }
 
@@ -612,7 +612,7 @@ impl ParentStack {
         let stack_base = StackPointer::new_unchecked(stack_ptr.get() & !(STACK_ALIGNMENT - 1));
         Self {
             stack_base,
-            #[cfg(teb)]
+            #[cfg(feature = "teb")]
             stack_ptr,
         }
     }
@@ -633,13 +633,13 @@ unsafe impl stack::Stack for ParentStack {
     }
 
     #[inline]
-    #[cfg(teb)]
+    #[cfg(feature = "teb")]
     fn teb_fields(&self) -> StackTebFields {
         unsafe { arch::read_parent_stack_teb_fields(self.stack_ptr) }
     }
 
     #[inline]
-    #[cfg(teb)]
+    #[cfg(feature = "teb")]
     fn update_teb_fields(&mut self, stack_limit: usize, guaranteed_stack_bytes: usize) {
         unsafe {
             arch::update_parent_stack_teb_fields(

@@ -92,7 +92,7 @@ use windows_sys::Win32::System::Memory::{
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows_sys::Win32::System::Threading::SetThreadStackGuarantee;
 
-#[cfg(teb)]
+#[cfg(feature = "teb")]
 use super::StackTebFields;
 use super::{Stack, StackPointer, MIN_STACK_SIZE};
 
@@ -132,10 +132,10 @@ fn guard_page_size(page_size: usize) -> usize {
 /// Default stack implementation which uses `VirtualAlloc`.
 pub struct DefaultStack {
     base: StackPointer,
-    #[cfg(teb)]
+    #[cfg(feature = "teb")]
     limit: usize,
     deallocation_stack: StackPointer,
-    #[cfg(teb)]
+    #[cfg(feature = "teb")]
     stack_guarantee: usize,
 }
 
@@ -176,10 +176,10 @@ impl DefaultStack {
             let limit = alloc_top - page_round_up(MIN_STACK_SIZE, page_size);
             let out = Self {
                 base: StackPointer::new(alloc_top).unwrap(),
-                #[cfg(teb)]
+                #[cfg(feature = "teb")]
                 limit,
                 deallocation_stack: StackPointer::new(alloc_base as usize).unwrap(),
-                #[cfg(teb)]
+                #[cfg(feature = "teb")]
                 stack_guarantee,
             };
 
@@ -240,7 +240,7 @@ unsafe impl Stack for DefaultStack {
         self.deallocation_stack
     }
 
-    #[cfg(teb)]
+    #[cfg(feature = "teb")]
     #[inline]
     fn teb_fields(&self) -> StackTebFields {
         StackTebFields {
@@ -251,7 +251,7 @@ unsafe impl Stack for DefaultStack {
         }
     }
 
-    #[cfg(teb)]
+    #[cfg(feature = "teb")]
     #[inline]
     fn update_teb_fields(&mut self, stack_limit: usize, guaranteed_stack_bytes: usize) {
         self.limit = stack_limit;

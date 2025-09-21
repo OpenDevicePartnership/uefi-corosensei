@@ -82,7 +82,7 @@ impl<Return> CoroutineTrapHandler<Return> {
             ) -> ! {
                 // This must be called after a stack overflow exception, but it
                 // doesn't hurt to call it for other exception types as well.
-                #[cfg(teb)]
+                #[cfg(feature = "teb")]
                 reset_guard_page();
 
                 let result = crate::unwind::catch_unwind_at_root(f.read());
@@ -107,7 +107,7 @@ impl<Return> CoroutineTrapHandler<Return> {
 /// documentation.
 ///
 /// [`_resetstkoflw`]: https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/resetstkoflw
-#[cfg(teb)]
+#[cfg(feature = "teb")]
 fn reset_guard_page() {
     extern "C" {
         fn _resetstkoflw() -> i32;
