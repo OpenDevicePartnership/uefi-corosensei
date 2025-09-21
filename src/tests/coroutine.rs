@@ -1,12 +1,15 @@
+extern crate alloc;
 extern crate std;
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::string::ToString;
 use std::{println, ptr};
 
-use crate::coroutine::Coroutine;
-use crate::{CoroutineResult, ScopedCoroutine};
+use alloc::sync::Arc;
+
+use crate::{Coroutine, CoroutineResult};
 
 #[test]
 fn smoke() {
@@ -95,7 +98,7 @@ fn panics_propagated() {
     let a = Rc::new(Cell::new(false));
     let b = SetOnDrop(a.clone());
     let mut coroutine = Coroutine::<(), (), ()>::new(move |_, ()| {
-        drop(&b);
+        drop(b);
         panic!("foobar");
     });
     let result = panic::catch_unwind(AssertUnwindSafe(|| coroutine.resume(())));
@@ -121,7 +124,7 @@ fn panics_propagated_via_parent() {
     let a = Rc::new(Cell::new(false));
     let b = SetOnDrop(a.clone());
     let mut coroutine = Coroutine::<(), (), ()>::new(move |y, ()| {
-        drop(&b);
+        drop(b);
         y.on_parent_stack(|| {
             panic!("foobar");
         });
@@ -156,7 +159,9 @@ fn suspend_and_resume_values() {
 
 #[test]
 fn stateful() {
+    #[allow(dead_code)]
     #[repr(align(128))]
+    #[allow(dead_code)]
     struct Aligned(u8);
     let state = [41, 42, 43, 44, 45];
     let aligned = Aligned(100);
@@ -174,18 +179,18 @@ fn stateful() {
 
 #[test]
 fn force_unwind() {
-    struct SetOnDrop<'a>(&'a mut bool);
-    impl<'a> Drop for SetOnDrop<'a> {
+    struct SetOnDrop(Arc<AtomicBool>);
+    impl Drop for SetOnDrop {
         fn drop(&mut self) {
-            *self.0 = true;
+            self.0.store(true, Ordering::Relaxed);
         }
     }
 
-    let mut a = false;
-    let mut b = false;
-    let a_drop = SetOnDrop(&mut a);
-    let b_drop = SetOnDrop(&mut b);
-    let mut coroutine = ScopedCoroutine::<(), (), (), _>::new(move |y, ()| {
+    let a = Arc::new(AtomicBool::new(false));
+    let b = Arc::new(AtomicBool::new(false));
+    let a_drop = SetOnDrop(a.clone());
+    let b_drop = SetOnDrop(b.clone());
+    let mut coroutine = Coroutine::<(), (), (), _>::new(move |y, ()| {
         drop(a_drop);
         y.suspend(());
         drop(b_drop);
@@ -196,16 +201,16 @@ fn force_unwind() {
     assert!(coroutine.started());
     assert!(coroutine.done());
     drop(coroutine);
-    assert!(a);
-    assert!(b);
+    assert!(a.load(Ordering::Relaxed));
+    assert!(b.load(Ordering::Relaxed));
 
     #[cfg(feature = "unwind")]
     {
-        let mut a = false;
-        let mut b = false;
-        let a_drop = SetOnDrop(&mut a);
-        let b_drop = SetOnDrop(&mut b);
-        let mut coroutine = ScopedCoroutine::<(), (), (), _>::new(move |y, ()| {
+        let a = Arc::new(AtomicBool::new(false));
+        let b = Arc::new(AtomicBool::new(false));
+        let a_drop = SetOnDrop(a.clone());
+        let b_drop = SetOnDrop(b.clone());
+        let mut coroutine = Coroutine::<(), (), (), _>::new(move |y, ()| {
             drop(a_drop);
             y.suspend(());
             drop(b_drop);
@@ -217,15 +222,15 @@ fn force_unwind() {
         assert!(coroutine.started());
         assert!(coroutine.done());
         drop(coroutine);
-        assert!(a);
-        assert!(b);
+        assert!(a.load(Ordering::Relaxed));
+        assert!(b.load(Ordering::Relaxed));
     }
 
-    let mut a = false;
-    let mut b = false;
-    let a_drop = SetOnDrop(&mut a);
-    let b_drop = SetOnDrop(&mut b);
-    let mut coroutine = ScopedCoroutine::<(), (), (), _>::new(move |y, ()| {
+    let a = Arc::new(AtomicBool::new(false));
+    let b = Arc::new(AtomicBool::new(false));
+    let a_drop = SetOnDrop(a.clone());
+    let b_drop = SetOnDrop(b.clone());
+    let mut coroutine = Coroutine::<(), (), (), _>::new(move |y, ()| {
         drop(a_drop);
         y.suspend(());
         drop(b_drop);
@@ -238,8 +243,8 @@ fn force_unwind() {
     assert!(coroutine.started());
     assert!(coroutine.done());
     drop(coroutine);
-    assert!(a);
-    assert!(b);
+    assert!(a.load(Ordering::Relaxed));
+    assert!(b.load(Ordering::Relaxed));
 }
 
 // The Windows stack starts out small with only one page comitted. Check that it
@@ -460,6 +465,8 @@ mod trap_handler {
                     sp = context.uc_mcontext.__gregs[libc::REG_SP] as usize;
                 } else if #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))] {
                     sp = (*context.uc_mcontext).__ss.__sp as usize;
+                } else if #[cfg(all(target_os = "linux", target_arch = "loongarch64"))] {
+                    sp = context.uc_mcontext.__gregs[3]  as usize;
                 } else {
                     compile_error!("Unsupported platform");
                 }
@@ -558,6 +565,14 @@ mod trap_handler {
                     (*context.uc_mcontext).__ss.__x[1] = x1;
                     (*context.uc_mcontext).__ss.__fp = x29;
                     (*context.uc_mcontext).__ss.__lr = lr;
+                } else if #[cfg(all(target_os = "linux", target_arch = "loongarch64"))] {
+                    let TrapHandlerRegs { pc, sp, a0, a1, fp, ra } = regs;
+                    context.uc_mcontext.__pc = pc;
+                    context.uc_mcontext.__gregs[1] = ra;
+                    context.uc_mcontext.__gregs[3] = sp;
+                    context.uc_mcontext.__gregs[4] = a0;
+                    context.uc_mcontext.__gregs[5] = a1;
+                    context.uc_mcontext.__gregs[22] = fp;
                 } else {
                     compile_error!("Unsupported platform");
                 }
@@ -631,10 +646,12 @@ mod trap_handler {
                     (*(*exception_info).ContextRecord).Rdi = rdi;
                     (*(*exception_info).ContextRecord).Rsi = rsi;
                 } else if #[cfg(target_arch = "x86")] {
-                    let TrapHandlerRegs { eip, esp, ebp, ecx, edx } = regs;
+                    let TrapHandlerRegs { eip, esp, ebp,eax, ebx, ecx, edx } = regs;
                     (*(*exception_info).ContextRecord).Eip = eip;
                     (*(*exception_info).ContextRecord).Esp = esp;
                     (*(*exception_info).ContextRecord).Ebp = ebp;
+                    (*(*exception_info).ContextRecord).Eax = eax;
+                    (*(*exception_info).ContextRecord).Ebx = ebx;
                     (*(*exception_info).ContextRecord).Ecx = ecx;
                     (*(*exception_info).ContextRecord).Edx = edx;
                 } else {

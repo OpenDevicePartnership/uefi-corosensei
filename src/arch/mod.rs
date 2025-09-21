@@ -17,7 +17,7 @@ cfg_if::cfg_if! {
     }
 }
 cfg_if::cfg_if! {
-    if #[cfg(any(target_os = "uefi", all(windows, not(teb))))] {
+    if #[cfg(any(target_os = "uefi", all(windows, not(feature = "teb"))))] {
         // COFF
         macro_rules! asm_function_begin {
             ($name:literal) => {
@@ -114,7 +114,6 @@ cfg_if::cfg_if! {
             ($name:literal) => {
                 concat!(
                     ".globl ", asm_mangle!($name), "\n",
-                    ".hidden ", asm_mangle!($name), "\n",
                     ".type ", asm_mangle!($name), ", ", asm_function_type!(), "\n",
                     asm_mangle!($name), ":\n",
                 )
@@ -167,7 +166,7 @@ unsafe fn allocate_obj_on_stack<T>(sp: &mut usize, sp_offset: usize, obj: T) {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(all(target_arch = "x86_64", any(not(windows),not(teb))))] {
+    if #[cfg(all(target_arch = "x86_64", any(not(windows),not(feature = "teb"))))] {
         mod x86_64;
         pub use self::x86_64::*;
     } else if #[cfg(all(target_arch = "x86_64", windows))] {
@@ -189,6 +188,9 @@ cfg_if::cfg_if! {
     } else if #[cfg(all(any(target_arch = "riscv64", target_arch = "riscv32"), not(windows)))] {
         mod riscv;
         pub use self::riscv::*;
+    } else if #[cfg(all(target_arch = "loongarch64", not(windows)))] {
+        mod loongarch64;
+        pub use self::loongarch64::*;
     } else {
         compile_error!("Unsupported target");
     }

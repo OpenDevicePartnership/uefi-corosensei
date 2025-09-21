@@ -7,7 +7,7 @@ if [ "${CROSS}" = "1" ]; then
     export CARGO_NET_RETRY=5
     export CARGO_NET_TIMEOUT=10
 
-    cargo install cross
+    cargo install cross --git https://github.com/cross-rs/cross --rev 4090beca3cfffa44371a5bba524de3a578aa46c3
     CARGO=cross
 fi
 
@@ -32,7 +32,8 @@ export RUST_TEST_THREADS=1
 "${CARGO}" test $CARGO_TEST_FLAGS --target "${TARGET}" --all-targets --release
 
 # asm-unwind
-if [ "${CHANNEL}" = "nightly" ]; then
-    "${CARGO}" test $CARGO_TEST_FLAGS --target "${TARGET}" --all-targets --features asm-unwind
-    "${CARGO}" test $CARGO_TEST_FLAGS --target "${TARGET}" --all-targets --features asm-unwind --release
-fi
+# Currently disabled because of LLVM issues.
+#if [ "${CHANNEL}" = "nightly" ]; then
+#    "${CARGO}" test $CARGO_TEST_FLAGS --target "${TARGET}" --all-targets --features asm-unwind
+#    "${CARGO}" test $CARGO_TEST_FLAGS --target "${TARGET}" --all-targets --features asm-unwind --release
+#fi

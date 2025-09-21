@@ -1,4 +1,4 @@
-//! Utilities for working with [`ScopedCoroutine::trap_handler`].
+//! Utilities for working with [`Coroutine::trap_handler`].
 
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
@@ -7,7 +7,7 @@ pub use crate::arch::TrapHandlerRegs;
 use crate::stack::StackPointer;
 use crate::unwind::initial_func_abi;
 #[cfg(doc)]
-use crate::ScopedCoroutine; // For rustdoc to resolve doc-links
+use crate::Coroutine; // For rustdoc to resolve doc-links
 use crate::{arch, util};
 
 /// Helper type to force a trapping coroutine to return from a trap handler.
@@ -16,7 +16,7 @@ use crate::{arch, util};
 /// thread-local storage for access by a trap handler. However it is UB to call
 /// `setup_trap_return` past the lifetime of the originating coroutine.
 ///
-/// See [`ScopedCoroutine::trap_handler`] for more details.
+/// See [`Coroutine::trap_handler`] for more details.
 #[derive(Clone, Copy)]
 pub struct CoroutineTrapHandler<Return> {
     pub(crate) stack_base: StackPointer,
@@ -80,15 +80,9 @@ impl<Return> CoroutineTrapHandler<Return> {
                 f: *mut F,
                 parent_link: *mut StackPointer
             ) -> ! {
-                // After returning from the exception handler we may have an
-                // invalid SEH exception chain. We need to reset it to the
-                // exception record at the root of the stack.
-                #[cfg(all(windows, target_arch = "x86"))]
-                arch::reset_seh_handler(parent_link);
-
                 // This must be called after a stack overflow exception, but it
                 // doesn't hurt to call it for other exception types as well.
-                #[cfg(teb)]
+                #[cfg(feature = "teb")]
                 reset_guard_page();
 
                 let result = crate::unwind::catch_unwind_at_root(f.read());
@@ -113,7 +107,7 @@ impl<Return> CoroutineTrapHandler<Return> {
 /// documentation.
 ///
 /// [`_resetstkoflw`]: https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/resetstkoflw
-#[cfg(teb)]
+#[cfg(feature = "teb")]
 fn reset_guard_page() {
     extern "C" {
         fn _resetstkoflw() -> i32;

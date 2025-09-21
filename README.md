@@ -82,13 +82,14 @@ fn main() {
 
 This crate currently supports the following targets:
 
-|         | ELF (Linux, BSD, bare metal, etc) | Darwin (macOS, iOS, etc) | Windows |
-| ------- | --------------------------------- | ------------------------ | ------- |
-| x86_64  | ✅                                 | ✅                        | ✅       |
-| x86     | ✅                                 | ❌                        | ⚠️*      |
-| AArch64 | ✅                                 | ✅                        | ❌       |
-| ARM     | ✅                                 | ❌                        | ❌       |
-| RISC-V  | ✅                                 | ❌                        | ❌       |
+|             | ELF (Linux, BSD, bare metal, etc) | Darwin (macOS, iOS, etc) | Windows |
+| ----------- | --------------------------------- | ------------------------ | ------- |
+| x86_64      | ✅                                | ✅                       | ✅      |
+| x86         | ✅                                | ❌                       | ⚠️*      |
+| AArch64     | ✅                                | ✅                       | ❌      |
+| ARM         | ✅                                | ❌                       | ❌      |
+| RISC-V      | ✅                                | ❌                       | ❌      |
+| LoongArch64 | ✅                                | ❌                       | ❌      |
 
 \* Linked backtraces are not supported on x86 Windows.
 
@@ -175,19 +176,27 @@ fn main() {
 ```text
    0: backtrace::main::{{closure}}
              at examples/backtrace.rs:11:21
-      corosensei::coroutine::ScopedCoroutine<Input,Yield,Return,Stack>::with_stack::coroutine_func::{{closure}}
-             at src/coroutine.rs:174:62
+      corosensei::coroutine::Coroutine<Input,Yield,Return,Stack>::with_stack::coroutine_func::{{closure}}
+             at src/coroutine.rs:163:62
+      <core::panic::unwind_safe::AssertUnwindSafe<F> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8f9080db423ca0fb6bef0686ce9a93940cdf1f13/library/core/src/panic/unwind_safe.rs:272:9
+      std::panicking::try::do_call
+             at /rustc/8f9080db423ca0fb6bef0686ce9a93940cdf1f13/library/std/src/panicking.rs:559:40
+      std::panicking::try
+             at /rustc/8f9080db423ca0fb6bef0686ce9a93940cdf1f13/library/std/src/panicking.rs:523:19
+   1: std::panic::catch_unwind
+             at /rustc/8f9080db423ca0fb6bef0686ce9a93940cdf1f13/library/std/src/panic.rs:149:14
       corosensei::unwind::catch_unwind_at_root
-             at src/unwind.rs:43:16
-   1: corosensei::coroutine::ScopedCoroutine<Input,Yield,Return,Stack>::with_stack::coroutine_func
-             at src/coroutine.rs:174:30
+             at src/unwind.rs:227:13
+      corosensei::coroutine::Coroutine<Input,Yield,Return,Stack>::with_stack::coroutine_func
+             at src/coroutine.rs:163:30
    2: stack_init_trampoline
    3: corosensei::arch::x86_64::switch_and_link
-             at src/arch/x86_64.rs:302:5
-      corosensei::coroutine::ScopedCoroutine<Input,Yield,Return,Stack>::resume_inner
-             at src/coroutine.rs:256:13
-      corosensei::coroutine::ScopedCoroutine<Input,Yield,Return,Stack>::resume
-             at src/coroutine.rs:235:19
+             at src/unwind.rs:137:17
+      corosensei::coroutine::Coroutine<Input,Yield,Return,Stack>::resume_inner
+             at src/coroutine.rs:239:13
+      corosensei::coroutine::Coroutine<Input,Yield,Return,Stack>::resume
+             at src/coroutine.rs:218:19
       backtrace::sub_function
              at examples/backtrace.rs:6:5
    4: backtrace::main
@@ -245,16 +254,20 @@ Two benchmarks are available via `cargo bench`:
 - "Coroutine switch" measures the time taken to resume a coroutine and then for that coroutine to yield back to its caller.
 - "Coroutine call" measures the time taken to create a new coroutine which returns immediately, call it and then drop the coroutine.
 
-Benchmark results when running on Linux:
+Benchmark results when running on macOS and Linux:
 
-| Arch    | CPU               | Frequency         | Benchmark        | Time      | Cycles  |
-| ------- | ----------------- | ----------------- | ---------------- | --------- | ------- |
-| AArch64 | Apple M1 Max      | 2.06GHz - 3.22GHz | Coroutine switch | 3.8665 ns | N/A     |
-| AArch64 | Apple M1 Max      | 2.06GHz - 3.22GHz | Coroutine call   | 6.4813 ns | N/A     |
-| x86-64  | AMD Ryzen 9 3950X | 3.5GHz - 4.7GHz   | Coroutine switch | 4.2867 ns | 14.8249 |
-| x86-64  | AMD Ryzen 9 3950X | 3.5GHz - 4.7GHz   | Coroutine call   | 5.5082 ns | 19.0069 |
-| AArch64 | ARM Cortex-A72    | 1.6GHz            | Coroutine switch | 16.278 ns | N/A     |
-| AArch64 | ARM Cortex-A72    | 1.6GHz            | Coroutine call   | 18.769 ns | N/A     |
+| Arch        | CPU               | Frequency         | Benchmark        | Time      | Cycles  |
+| ----------- | ----------------- | ----------------- | ---------------- | --------- | ------- |
+| AArch64     | Apple M1 Max      | 2.06GHz - 3.22GHz | Coroutine switch | 3.8665 ns | N/A     |
+| AArch64     | Apple M1 Max      | 2.06GHz - 3.22GHz | Coroutine call   | 6.4813 ns | N/A     |
+| AArch64     | Apple M3 Max      | 2.8GHz - 4.05GHz  | Coroutine switch | 1.8212 ns | N/A     |
+| AArch64     | Apple M3 Max      | 2.8GHz - 4.05GHz  | Coroutine call   | 2.6318 ns | N/A     |
+| x86-64      | AMD Ryzen 9 3950X | 3.5GHz - 4.7GHz   | Coroutine switch | 4.2867 ns | 14.8249 |
+| x86-64      | AMD Ryzen 9 3950X | 3.5GHz - 4.7GHz   | Coroutine call   | 5.5082 ns | 19.0069 |
+| AArch64     | ARM Cortex-A72    | 1.6GHz            | Coroutine switch | 16.278 ns | N/A     |
+| AArch64     | ARM Cortex-A72    | 1.6GHz            | Coroutine call   | 18.769 ns | N/A     |
+| LoongArch64 | Loongson 3A5000   | 2.3GHz            | Coroutine switch | 9.2831 ns | N/A     |
+| LoongArch64 | Loongson 3A5000   | 2.3GHz            | Coroutine call   | 16.101 ns | N/A     |
 
 ## Credits
 

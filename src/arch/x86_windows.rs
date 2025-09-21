@@ -282,13 +282,38 @@ global_asm!(
     asm_function_end!("stack_call_trampoline"),
 );
 
+// Special trampoline to reset the SEH exception chain before calling
+// trap_handler.
+global_asm!(
+    // See stack_init_trampoline for an explanation of the assembler directives
+    // used here.
+    ".balign 16",
+    asm_function_begin!("trap_handler_trampoline"),
+    // At this point our register state contains the following:
+    // - ESP points to the coroutine stack and holds a return address pointing
+    //   to stack_init_trampoline_return.
+    // - EBP points to parent_link on the coroutine stack, forming a valid frame
+    //   pointer chain.
+    // - EAX points to the initial SEH exception chain entry.
+    // - EBX holds the address of the trap_handler function.
+    // - EDX and ECX hold the arguments to trap_handler.
+    //
+    // Reset the SEH exception chain to just the initial entry pointing to
+    // FinalExceptionHandler.
+    "mov fs:[0x0], eax",
+    // Jump to trap_handler.
+    "jmp ebx",
+    asm_function_end!("trap_handler_trampoline"),
+);
+
 // These trampolines use a custom calling convention and should only be called
 // with inline assembly.
 extern "C" {
     fn stack_init_trampoline(arg: EncodedValue, stack_base: StackPointer, stack_ptr: StackPointer);
-    fn stack_init_trampoline_return();
+    static stack_init_trampoline_return: [u8; 0];
     #[allow(dead_code)]
     fn stack_call_trampoline(arg: *mut u8, sp: StackPointer, f: StackCallFunc);
+    fn trap_handler_trampoline();
 }
 
 /// The end of the exception handler chain is marked with 0xffffffff.
@@ -357,7 +382,10 @@ pub unsafe fn init_stack<T>(stack: &impl Stack, func: InitialFunc<T>, obj: T) ->
     // This is only needed on x86 Windows because this is the only platform
     // where the stack walker will alternate between looking at the frame
     // pointer chain and looking up FPO unwinding information in a PDB.
-    push(&mut sp, Some(stack_init_trampoline_return as StackWord));
+    push(
+        &mut sp,
+        Some(stack_init_trampoline_return.as_ptr() as StackWord),
+    );
 
     // Placeholder for parent link.
     push(&mut sp, None);
@@ -411,7 +439,7 @@ pub unsafe fn switch_and_link(
         // Push a return address onto our stack and then jump to the return
         // address at the top of the coroutine stack.
         //
-        // From here on execution continues in stack_init_trampoline or the 0:
+        // From here on execution continues in stack_init_trampoline or the 3:
         // label in switch_yield.
         "call [eax]",
 
@@ -420,7 +448,6 @@ pub unsafe fn switch_and_link(
         // - EDX: The top of the coroutine stack, or 0 if coming from
         //        switch_and_reset.
         // - ECX: The argument passed from the coroutine.
-        "0:",
 
         "pop esi",
 
@@ -480,7 +507,7 @@ pub unsafe fn switch_yield(arg: EncodedValue, parent_link: *mut StackPointer) ->
         // point to "0". We use an intermediate constant here to work around a
         // limitation of LLVM's Intel syntax parser which doesn't support 2
         // symbols in an expression.
-        ".equ .Loffset_yield, 0f - 2b",
+        ".equ .Loffset_yield, 3f - 2b",
         "add dword ptr [esp], offset .Loffset_yield",
 
         // Save our stack pointer to EDX, which is then returned out of
@@ -514,7 +541,7 @@ pub unsafe fn switch_yield(arg: EncodedValue, parent_link: *mut StackPointer) ->
         // - EAX points to the top of our stack.
         // - EDX points to the base of our stack.
         // - ECX contains the argument passed from switch_and_link.
-        "0:",
+        "3:",
 
         // Save the EBP of the parent context to the parent stack.
         "push ebp",
@@ -611,7 +638,7 @@ pub unsafe fn switch_and_throw(
         // about how this code works.
         "call 2f",
         "2:",
-        ".equ .Loffset_throw, 0f - 2b",
+        ".equ .Loffset_throw, 3f - 2b",
         "add dword ptr [esp], offset .Loffset_throw",
 
         // Save EBP of the parent context.
@@ -645,7 +672,7 @@ pub unsafe fn switch_and_throw(
 
         // Upon returning, our register state is just like a normal return into
         // switch_and_link().
-        "0:",
+        "3:",
 
         // This is copied from the second half of switch_and_link().
         "pop esi",
@@ -692,6 +719,18 @@ pub unsafe fn drop_initial_obj(
     let stack = stack_ptr.get() as *const StackWord;
     *base.sub(1) = *stack.add(3); // StackLimit
     *base.sub(2) = *stack.add(5); // GuaranteedStackBytes
+}
+
+/// This function is called by `force_reset` to update the mutable TEB fields
+/// at the bottom of the parent stack with the ones from the suspended state.
+///
+/// The coroutine must be in a suspended state and *not* in the initial state.
+#[inline]
+pub unsafe fn reset_teb_fields_from_suspended(stack_base: StackPointer, stack_ptr: StackPointer) {
+    let base = stack_base.get() as *mut StackWord;
+    let stack = stack_ptr.get() as *const StackWord;
+    *base.sub(1) = *stack.add(5); // StackLimit
+    *base.sub(2) = *stack.add(7); // GuaranteedStackBytes
 }
 
 /// This function must be called after a stack has finished running a coroutine
@@ -753,6 +792,8 @@ pub struct TrapHandlerRegs {
     pub eip: u32,
     pub esp: u32,
     pub ebp: u32,
+    pub eax: u32,
+    pub ebx: u32,
     pub ecx: u32,
     pub edx: u32,
 }
@@ -774,12 +815,23 @@ pub unsafe fn setup_trap_trampoline<T>(
     let val_ptr = sp;
 
     // Set up a return address which returns to stack_init_trampoline.
-    push(&mut sp, Some(stack_init_trampoline_return as StackWord));
+    push(
+        &mut sp,
+        Some(stack_init_trampoline_return.as_ptr() as StackWord),
+    );
+
+    // Since we reset the stack offset back to the base of the coroutine stack,
+    // we also need to reset the SEH ExceptionList chain in the TIB to just the
+    // initial FinalExceptionHandler. This is done by pointing to a small
+    // trampoline that runs before any other code is executed.
+    let initial_seh_handler = parent_link - 8;
 
     // Set up registers for entry into the function.
     TrapHandlerRegs {
-        eip: handler as u32,
+        eip: trap_handler_trampoline as u32,
         esp: sp as u32,
+        eax: initial_seh_handler as u32,
+        ebx: handler as u32,
         ecx: val_ptr as u32,
         edx: parent_link as u32,
         ebp: parent_link as u32,
@@ -823,18 +875,4 @@ pub unsafe fn on_stack<S: Stack>(arg: *mut u8, stack: S, f: StackCallFunc) {
         in("eax") f,
         clobber_abi("fastcall"),
     );
-}
-
-/// The trap handler will have reset our stack offset back to the base of the
-/// coroutine stack, but it won't have reset the SEH ExceptionList chain in the
-/// TIB. We need to manually reset it here before executing any user code which
-/// might raise an exception.
-pub unsafe fn reset_seh_handler(parent_link: *mut StackPointer) {
-    // The initial exception record is conveniently located just below the
-    // parent link.
-    let exception_record = parent_link as usize - 8;
-
-    // Write to the ExceptionList field in the TIB, just like on entry to the
-    // coroutine.
-    asm!("mov fs:[0x0], {}", in(reg) exception_record, options(nostack, preserves_flags));
 }

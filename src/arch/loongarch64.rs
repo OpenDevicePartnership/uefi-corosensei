@@ -1,4 +1,4 @@
-//! Low-level RISC-V support.
+//! Low-level LoongArch64 support.
 //!
 //! This file is heavily based on the x86_64 implementation.
 //! Relevant differences are highlighted in comments, but otherwise most
@@ -24,9 +24,9 @@
 //! +--------------+
 //! | Saved PC     |
 //! +--------------+
-//! | Saved S1     |
+//! | Saved FP     |
 //! +--------------+
-//! | Saved S0     |
+//! | Saved S8     |
 //! +--------------+
 //! ```
 //!
@@ -39,11 +39,11 @@
 //! +-----------+
 //! | Padding   |
 //! +-----------+
-//! | Saved S1  |
+//! | Saved S8  |
 //! +-----------+  <- The parent link points to here instead of pointing to the
 //! | Saved PC  |     top of the stack. This matches the GCC/LLVM behavior of
 //! +-----------+     having the frame pointer point to the address above the
-//! | Saved S0  |     saved RA/FP.
+//! | Saved FP  |     saved RA/FP.
 //! +-----------+
 //! ```
 //!
@@ -80,67 +80,9 @@ use crate::unwind::{
 };
 use crate::util::EncodedValue;
 
-// Helper macros to write assembly code that works on both RV32 and RV64.
-cfg_if::cfg_if! {
-    if #[cfg(target_pointer_width = "64")] {
-        macro_rules! x {
-            ($val32:expr, $val64:expr) => {
-                $val64
-            };
-        }
-    } else if #[cfg(target_pointer_width = "32")] {
-        macro_rules! x {
-            ($val32:expr, $val64:expr) => {
-                $val32
-            };
-        }
-    }
-}
-macro_rules! xlen_bytes {
-    () => {
-        x!("4", "8")
-    };
-    ($word_offset:expr) => {
-        concat!("((", stringify!($word_offset), ") * ", xlen_bytes!(), ")")
-    };
-}
-macro_rules! l {
-    ($val:expr, $word_offset:expr, $addr:expr) => {
-        concat!(
-            x!("lw", "ld"),
-            " ",
-            $val,
-            ", ",
-            xlen_bytes!($word_offset),
-            "(",
-            $addr,
-            ")"
-        )
-    };
-}
-macro_rules! s {
-    ($val:expr, $word_offset:expr, $addr:expr) => {
-        concat!(
-            x!("sw", "sd"),
-            " ",
-            $val,
-            ", ",
-            xlen_bytes!($word_offset),
-            "(",
-            $addr,
-            ")"
-        )
-    };
-}
-macro_rules! addi {
-    ($dest:expr, $src:expr, $word_offset:expr) => {
-        concat!("addi ", $dest, ", ", $src, ", ", xlen_bytes!($word_offset),)
-    };
-}
-
 pub const STACK_ALIGNMENT: usize = 16;
-pub const PARENT_LINK_OFFSET: usize = x!(8, 16);
-pub type StackWord = usize;
+pub const PARENT_LINK_OFFSET: usize = 16;
+pub type StackWord = u64;
 
 global_asm!(
     ".balign 4",
@@ -150,58 +92,54 @@ global_asm!(
     // At this point our register state contains the following:
     // - SP points to the top of the parent stack.
     // - RA contains the return address in the parent context.
-    // - S0 and S1 contain their value from the parent context.
-    // - A2 points to the top of our stack.
+    // - S8 and FP contain their value from the parent context.
+    // - A2 points to the top of the coroutine stack.
     // - A1 points to the base of our stack.
     // - A0 contains the argument passed from switch_and_link.
     //
-    // Push the S0, S1 and PC values of the parent context onto the parent
+    // Push the S8, FP and PC values of the parent context onto the parent
     // stack.
-    addi!("sp", "sp", -4),
-    s!("s1", 2, "sp"),
-    s!("ra", 1, "sp"),
-    s!("s0", 0, "sp"),
+    "addi.d $sp, $sp, -32",
+    "st.d $s8, $sp, 16",
+    "st.d $ra, $sp, 8",
+    "st.d $fp, $sp, 0",
     // Write the parent stack pointer to the parent link. This is adjusted to
     // point just above the saved PC/RA to match the GCC/LLVM ABI.
-    addi!("t0", "sp", 2),
-    s!("t0", -2, "a1"),
-    // Set up the frame pointer to point at the stack base. This is needed for
+    "addi.d $t0, $sp, 16",
+    "st.d $t0, $a1, -16",
+    // Set up the frame pointer to point at the parent link. This is needed for
     // the unwinding code below.
-    "mv s0, a1",
+    "move $fp, $a1",
     // Adjust A1 to point to the parent link.
-    addi!("a1", "a1", -2),
+    "addi.d $a1, $a1, -16",
     // Pop the padding and initial PC from the coroutine stack. This also sets
     // up the 3rd argument to the initial function to point to the object that
     // init_stack() set up on the stack.
-    addi!("a2", "a2", 4),
+    "addi.d $a2, $a2, 32",
     // Switch to the coroutine stack.
-    "mv sp, a2",
+    "move $sp, $a2",
     // The actual meanings of the magic bytes are:
     // 0x0f: DW_CFA_def_cfa_expression
     // 5: byte length of the following DWARF expression
-    // 0x78 0x78/0x70: DW_OP_breg8 (s0 - 8/16)
+    // 0x86 0x70: DW_OP_breg22 (fp - 16)
     // 0x06: DW_OP_deref
-    // 0x23, 0x08/0x10: DW_OP_plus_uconst 8/16
-    concat!(
-        ".cfi_escape 0x0f, 5, 0x78, ",
-        x!("0x78", "0x70"),
-        ", 0x06, 0x23, ",
-        xlen_bytes!(2)
-    ),
+    // 0x23, 0x10: DW_OP_plus_uconst 16
+    ".cfi_escape 0x0f, 5, 0x86, 0x70, 0x06, 0x23, 0x10",
     // Now we can tell the unwinder how to restore the 3 registers that were
     // pushed on the parent stack. These are described as offsets from the CFA
     // that we just calculated.
-    concat!(".cfi_offset s1, ", xlen_bytes!(-2)),
-    concat!(".cfi_offset ra, ", xlen_bytes!(-3)),
-    concat!(".cfi_offset s0, ", xlen_bytes!(-4)),
+    ".cfi_offset 31, -16",
+    ".cfi_offset 1, -24",
+    ".cfi_offset 22, -32",
     // As in the original x86_64 code, hand-write the call operation so that it
     // doesn't push an entry into the CPU's return prediction stack.
-    concat!("lla ra, ", asm_mangle!("stack_init_trampoline_return")),
-    l!("t0", 1, "a1"),
-    "jr t0",
+    "la.pcrel $ra, 0f",
+    "ld.d $t0, $a1, 8",
+    "jr $t0",
+    "0:",
     asm_function_alt_entry!("stack_init_trampoline_return"),
-    // This UNIMP is necessary because of our use of .cfi_signal_frame earlier.
-    "unimp",
+    // This BREAK is necessary because of our use of .cfi_signal_frame earlier.
+    "break 0",
     ".cfi_endproc",
     asm_function_end!("stack_init_trampoline"),
 );
@@ -215,33 +153,32 @@ global_asm!(
     cfi_signal_frame!(),
     // At this point our register state contains the following:
     // - SP points to the top of the parent stack.
-    // - S0 holds its value from the parent context.
+    // - FP holds its value from the parent context.
     // - A2 is the function that should be called.
     // - A1 points to the top of our stack.
     // - A0 contains the argument to be passed to the function.
     //
-    // Create a stack frame and point the frame pointer at it. This is a bit
-    // tricky because we need to ensure 16-byte stack alignment even on RV32.
-    "addi sp, sp, -16",
+    // Create a stack frame and point the frame pointer at it.
+    "addi.d $sp, $sp, -16",
     ".cfi_def_cfa_offset 16",
-    s!("ra", 1, "sp"),
-    s!("s0", 0, "sp"),
-    addi!("s0", "sp", 2),
-    concat!(".cfi_def_cfa s0, ", x!("8", "0")),
-    concat!(".cfi_offset ra, ", x!("-12", "-8")),
-    concat!(".cfi_offset s0, ", x!("-16", "-16")),
+    "st.d $ra, $sp, 8",
+    "st.d $fp, $sp, 0",
+    "addi.d $fp, $sp, 16",
+    ".cfi_def_cfa 22, 0",
+    ".cfi_offset 1, -8",
+    ".cfi_offset 22, -16",
     // Switch to the new stack.
-    "mv sp, a1",
+    "move $sp, $a1",
     // Call the function pointer. The argument is already in the correct
     // register for the function.
-    "jalr a2",
+    "jirl $ra, $a2, 0",
     // Switch back to the original stack by restoring from the frame pointer,
     // then return.
-    addi!("sp", "s0", -2),
-    l!("ra", 1, "sp"),
-    l!("s0", 0, "sp"),
-    "addi sp, sp, 16",
-    "ret",
+    "addi.d $sp, $fp, -16",
+    "ld.d $ra, $sp, 8",
+    "ld.d $fp, $sp, 0",
+    "addi.d $sp, $sp, 16",
+    "jr $ra",
     ".cfi_endproc",
     asm_function_end!("stack_call_trampoline"),
 );
@@ -267,7 +204,7 @@ pub unsafe fn init_stack<T>(stack: &impl Stack, func: InitialFunc<T>, obj: T) ->
 
     // Allocate space on the stack for the initial object, rounding to
     // STACK_ALIGNMENT.
-    allocate_obj_on_stack(&mut sp, x!(8, 16), obj);
+    allocate_obj_on_stack(&mut sp, 16, obj);
 
     // The stack is aligned to STACK_ALIGNMENT at this point.
     debug_assert_eq!(sp % STACK_ALIGNMENT, 0);
@@ -278,8 +215,8 @@ pub unsafe fn init_stack<T>(stack: &impl Stack, func: InitialFunc<T>, obj: T) ->
     // Entry point called by switch_and_link().
     push(&mut sp, Some(stack_init_trampoline as StackWord));
 
-    // Add a 2-word offset because switch_and_link() looks for the target PC
-    // 2 words above the stack pointer.
+    // Add a 16-byte offset because switch_and_link() looks for the target PC
+    // 16 bytes above the stack pointer.
     push(&mut sp, None);
     push(&mut sp, None);
 
@@ -304,37 +241,35 @@ pub unsafe fn switch_and_link(
         cfi_reset_args_size_root!(),
 
         // Read the saved PC from the coroutine stack and call it.
-        l!("t0", 2, "a2"),
-        "jalr t0",
+        "ld.d $t0, $a2, 16",
+        "jirl $ra, $t0, 0",
 
         // Upon returning, our register state contains the following:
-        // - A2: Our stack pointer + 2 words.
+        // - A2: Our stack pointer.
         // - A1: The top of the coroutine stack, or 0 if coming from
         //       switch_and_reset.
         // - A0: The argument passed from the coroutine.
 
         // Switch back to our stack and free the saved registers.
-        addi!("sp", "a2", 2),
+        "addi.d $sp, $a2, 16",
 
         // Pass the argument in A0.
-        inlateout("a0") arg => ret_val,
+        inlateout("$a0") arg => ret_val,
 
         // We get the coroutine stack pointer back in A1.
-        lateout("a1") ret_sp,
+        lateout("$a1") ret_sp,
 
         // We pass the stack base in A1.
-        in("a1") stack_base.get(),
+        in("$a1") stack_base.get() as u64,
 
         // We pass the target stack pointer in A2.
-        in("a2") sp.get(),
+        in("$a2") sp.get() as u64,
 
         // Mark all registers as clobbered.
-        lateout("s2") _, lateout("s3") _, lateout("s4") _, lateout("s5") _,
-        lateout("s6") _, lateout("s7") _, lateout("s8") _, lateout("s9") _,
-        lateout("s10") _, lateout("s11") _,
-        lateout("fs0") _, lateout("fs1") _, lateout("fs2") _, lateout("fs3") _,
-        lateout("fs4") _, lateout("fs5") _, lateout("fs6") _, lateout("fs7") _,
-        lateout("fs8") _, lateout("fs9") _, lateout("fs10") _, lateout("fs11") _,
+        lateout("$s0") _, lateout("$s1") _, lateout("$s2") _, lateout("$s3") _,
+        lateout("$s4") _, lateout("$s5") _, lateout("$s6") _, lateout("$s7") _,
+        lateout("$fs0") _, lateout("$fs1") _, lateout("$fs2") _, lateout("$fs3") _,
+        lateout("$fs4") _, lateout("$fs5") _, lateout("$fs6") _, lateout("$fs7") _,
         clobber_abi("C"),
     );
 
@@ -346,26 +281,26 @@ pub unsafe fn switch_yield(arg: EncodedValue, parent_link: *mut StackPointer) ->
     let ret_val;
 
     asm_may_unwind_yield!(
-        // Save S0 and S1 while also reserving space on the stack for our
+        // Save S8 and FP while also reserving space on the stack for our
         // saved PC.
-        addi!("sp", "sp", -4),
-        s!("s0", 0, "sp"),
-        s!("s1", 1, "sp"),
+        "addi.d $sp, $sp, -32",
+        "st.d $fp, $sp, 0",
+        "st.d $s8, $sp, 8",
 
         // Write our return address to its expected position on the stack.
-        "lla ra, 0f",
-        s!("ra", 2, "sp"),
+        "la.pcrel $ra, 0f",
+        "st.d $ra, $sp, 16",
 
         // Get the parent stack pointer from the parent link.
-        l!("a2", 0, "t0"),
+        "ld.d $a2, $t0, 0",
 
         // Save our stack pointer to A1.
-        "mv a1, sp",
+        "move $a1, $sp",
 
-        // Restore S0, S1 and RA from the parent stack.
-        l!("s1", 0, "a2"),
-        l!("ra", -1, "a2"),
-        l!("s0", -2, "a2"),
+        // Restore S8, FP and RA from the parent stack.
+        "ld.d $s8, $a2, 0",
+        "ld.d $ra, $a2, -8",
+        "ld.d $fp, $a2, -16",
 
         // DW_CFA_GNU_args_size 0
         //
@@ -379,52 +314,50 @@ pub unsafe fn switch_yield(arg: EncodedValue, parent_link: *mut StackPointer) ->
         cfi_reset_args_size_yield!(),
 
         // Return into the parent context
-        "ret",
+        "jr $ra",
 
         // This gets called by switch_and_link(). At this point our register
         // state contains the following:
         // - SP points to the top of the parent stack.
         // - RA contains the return address in the parent context.
-        // - S0 and S1 contain their value from the parent context.
-        // - A2 points to the top of our stack.
+        // - S8 and FP contain their value from the parent context.
+        // - A2 points to the top of the coroutine stack.
         // - A1 points to the base of our stack.
         // - A0 contains the argument passed from switch_and_link.
         "0:",
 
-        // Push the S0, S1 and PC values of the parent context onto the parent
+        // Push the S8, FP and PC values of the parent context onto the parent
         // stack.
-        addi!("sp", "sp", -4),
-        s!("s1", 2, "sp"),
-        s!("ra", 1, "sp"),
-        s!("s0", 0, "sp"),
+        "addi.d $sp, $sp, -32",
+        "st.d $s8, $sp, 16",
+        "st.d $ra, $sp, 8",
+        "st.d $fp, $sp, 0",
 
         // Write the parent stack pointer to the parent link. This is adjusted
         // to point just above the saved PC/RA to match the GCC/LLVM ABI.
-        addi!("t0", "sp", 2),
-        s!("t0", -2, "a1"),
+        "addi.d $t0, $sp, 16",
+        "st.d $t0, $a1, -16",
 
-        // Load our S0 and S1 values from the coroutine stack.
-        l!("s1", 1, "a2"),
-        l!("s0", 0, "a2"),
+        // Load our S8 and FP values from the coroutine stack.
+        "ld.d $s8, $a2, 8",
+        "ld.d $fp, $a2, 0",
 
         // Switch to the coroutine stack while popping the saved registers and
         // padding.
-        addi!("sp", "a2", 4),
+        "addi.d $sp, $a2, 32",
 
         // Pass the argument in A0.
-        inlateout("a0") arg => ret_val,
+        inlateout("$a0") arg => ret_val,
 
         // The parent link can be in any register, T0 is arbitrarily chosen
         // here.
-        in("t0") parent_link,
+        in("$t0") parent_link as u64,
 
         // See switch_and_link() for an explanation of the clobbers.
-        lateout("s2") _, lateout("s3") _, lateout("s4") _, lateout("s5") _,
-        lateout("s6") _, lateout("s7") _, lateout("s8") _, lateout("s9") _,
-        lateout("s10") _, lateout("s11") _,
-        lateout("fs0") _, lateout("fs1") _, lateout("fs2") _, lateout("fs3") _,
-        lateout("fs4") _, lateout("fs5") _, lateout("fs6") _, lateout("fs7") _,
-        lateout("fs8") _, lateout("fs9") _, lateout("fs10") _, lateout("fs11") _,
+        lateout("$s0") _, lateout("$s1") _, lateout("$s2") _, lateout("$s3") _,
+        lateout("$s4") _, lateout("$s5") _, lateout("$s6") _, lateout("$s7") _,
+        lateout("$fs0") _, lateout("$fs1") _, lateout("$fs2") _, lateout("$fs3") _,
+        lateout("$fs4") _, lateout("$fs5") _, lateout("$fs6") _, lateout("$fs7") _,
         clobber_abi("C"),
     );
 
@@ -437,23 +370,23 @@ pub unsafe fn switch_and_reset(arg: EncodedValue, parent_link: *mut StackPointer
     // comments there. Only the differences are commented.
     asm!(
         // Load the parent context's stack pointer.
-        l!("a2", 0, "{parent_link}"),
+        "ld.d $a2, {parent_link}, 0",
 
-        // Restore S0, S1 and RA from the parent stack.
-        l!("s1", 0, "a2"),
-        l!("ra", -1, "a2"),
-        l!("s0", -2, "a2"),
+        // Restore S8, FP and RA from the parent stack.
+        "ld.d $s8, $a2, 0",
+        "ld.d $ra, $a2, -8",
+        "ld.d $fp, $a2, -16",
 
         // Return into the parent context
-        "ret",
+        "jr $ra",
 
-        parent_link = in(reg) parent_link,
+        parent_link = in(reg) parent_link as u64,
 
-        in("a0") arg,
+        in("$a0") arg,
 
         // Hard-code the returned stack pointer value to 0 to indicate that this
         // coroutine is done.
-        in("a1") 0,
+        in("$a1") 0,
 
         options(noreturn),
     );
@@ -476,61 +409,66 @@ pub unsafe fn switch_and_throw(
 
     asm_may_unwind_root!(
         // Set up a return address.
-        "lla ra, 0f",
+        "la.pcrel $ra, 0f",
 
         // Save the registers of the parent context.
-        addi!("sp", "sp", -4),
-        s!("s1", 2, "sp"),
-        s!("ra", 1, "sp"),
-        s!("s0", 0, "sp"),
+        "addi.d $sp, $sp, -32"
+        "st.d $s8, $sp, 16"
+        "st.d $ra, $sp, 8"
+        "st.d $fp, $sp, 0"
 
-        // Write the parent stack pointer to the parent link. This is adjusted
-        // to point just above the saved PC/RA to match the GCC/LLVM ABI.
-        addi!("t1", "sp", 2),
-        s!("t1", -2, "a1"),
+        // Update the parent link near the base of the coroutine stack.
+        "addi.d $t1, $sp, 16"
+        "st.d $t1, $a1, -16"
 
         // Load the coroutine registers, with the saved PC into RA.
-        l!("ra", 2, "t0"),
-        l!("s1", 1, "t0"),
-        l!("s0", 0, "t0"),
+        "ld.d $ra, $t0, 16"
+        "ld.d $s8, $t0, 8"
+        "ld.d $fp, $t0, 0"
 
         // Switch to the coroutine stack while popping the saved registers and
         // padding.
-        addi!("sp", "t0", 4),
+        "addi.d $sp, $t0, 32",
+
+        // DW_CFA_GNU_args_size 0
+        //
+        // Indicate to the unwinder that this "call" does not take any arguments
+        // and no stack space needs to be popped before executing a landing pad.
+        // This is mainly here to undo the effect of any previous
+        // DW_CFA_GNU_args_size that may have been set in the current function.
+        cfi_reset_args_size_root!(),
 
         // Simulate a call with an artificial return address so that the throw
         // function will unwind straight into the switch_and_yield() call with
         // the register state expected outside the asm! block.
-        "tail {throw}",
+        "b {throw}",
 
         // Upon returning, our register state is just like a normal return into
         // switch_and_link().
         "0:",
 
         // Switch back to our stack and free the saved registers.
-        addi!("sp", "a2", 2),
+        "addi.d $sp, $a2, 32",
 
         // Helper function to trigger stack unwinding.
         throw = sym throw,
 
         // Argument to pass to the throw function.
-        in("a0") forced_unwind.0.get(),
+        in("$a0") forced_unwind.0.get(),
 
         // Same output registers as switch_and_link().
-        lateout("a0") ret_val,
-        lateout("a1") ret_sp,
+        lateout("$a0") ret_val,
+        lateout("$a1") ret_sp,
 
         // Stack pointer and stack base inputs for stack switching.
-        in("a1") stack_base.get(),
-        in("t0") sp.get(),
+        in("$a1") stack_base.get() as u64,
+        in("$t0") sp.get() as u64,
 
         // See switch_and_link() for an explanation of the clobbers.
-        lateout("s2") _, lateout("s3") _, lateout("s4") _, lateout("s5") _,
-        lateout("s6") _, lateout("s7") _, lateout("s8") _, lateout("s9") _,
-        lateout("s10") _, lateout("s11") _,
-        lateout("fs0") _, lateout("fs1") _, lateout("fs2") _, lateout("fs3") _,
-        lateout("fs4") _, lateout("fs5") _, lateout("fs6") _, lateout("fs7") _,
-        lateout("fs8") _, lateout("fs9") _, lateout("fs10") _, lateout("fs11") _,
+        lateout("$s0") _, lateout("$s1") _, lateout("$s2") _, lateout("$s3") _,
+        lateout("$s4") _, lateout("$s5") _, lateout("$s6") _, lateout("$s7") _,
+        lateout("$fs0") _, lateout("$fs1") _, lateout("$fs2") _, lateout("$fs3") _,
+        lateout("$fs4") _, lateout("$fs5") _, lateout("$fs6") _, lateout("$fs7") _,
         clobber_abi("C"),
     );
 
@@ -543,7 +481,7 @@ pub unsafe fn drop_initial_obj(
     stack_ptr: StackPointer,
     drop_fn: unsafe fn(ptr: *mut u8),
 ) {
-    let ptr = (stack_ptr.get() as *mut u8).add(x!(16, 32));
+    let ptr = (stack_ptr.get() as *mut u8).add(32);
     drop_fn(ptr);
 }
 
@@ -559,18 +497,18 @@ pub unsafe fn drop_initial_obj(
 ///
 /// ```
 /// # use corosensei::trap::TrapHandlerRegs;
-/// # let regs = TrapHandlerRegs { pc: 0, ra: 0, sp: 0, a0: 0, a1: 0, s0: 0 };
-/// let TrapHandlerRegs { pc, ra, sp, a0, a1, s0 } = regs;
+/// # let regs = TrapHandlerRegs { pc: 0, sp: 0, a0: 0, a1: 0, fp: 0, ra: 0 };
+/// let TrapHandlerRegs { pc, sp, a0, a1, fp, ra } = regs;
 /// ```
 #[allow(missing_docs)]
 #[derive(Clone, Copy, Debug)]
 pub struct TrapHandlerRegs {
-    pub pc: usize,
-    pub ra: usize,
-    pub sp: usize,
-    pub a0: usize,
-    pub a1: usize,
-    pub s0: usize,
+    pub pc: u64,
+    pub sp: u64,
+    pub a0: u64,
+    pub a1: u64,
+    pub fp: u64,
+    pub ra: u64,
 }
 
 pub unsafe fn setup_trap_trampoline<T>(
@@ -578,25 +516,23 @@ pub unsafe fn setup_trap_trampoline<T>(
     val: T,
     handler: TrapHandler<T>,
 ) -> TrapHandlerRegs {
-    // Preserve the top 8/16 bytes of the stack since they contain the parent
+    // Preserve the top 16 bytes of the stack since they contain the parent
     // link.
-    let parent_link = stack_base.get() - x!(8, 16);
+    let parent_link = stack_base.get() - 16;
 
     // Everything below this can be overwritten. Write the object to the stack.
     let mut sp = parent_link;
-    allocate_obj_on_stack(&mut sp, x!(8, 16), val);
+    allocate_obj_on_stack(&mut sp, 16, val);
     let val_ptr = sp;
-
-    debug_assert_eq!(sp % STACK_ALIGNMENT, 0);
 
     // Set up registers for entry into the function.
     TrapHandlerRegs {
-        pc: handler as usize,
-        ra: stack_init_trampoline_return.as_ptr() as usize,
-        sp,
-        a0: val_ptr,
-        a1: parent_link,
-        s0: stack_base.get(),
+        pc: handler as u64,
+        sp: sp as u64,
+        a0: val_ptr as u64,
+        a1: parent_link as u64,
+        fp: stack_base.get() as u64,
+        ra: stack_init_trampoline_return.as_ptr() as u64,
     }
 }
 
@@ -612,11 +548,11 @@ pub unsafe fn on_stack(arg: *mut u8, stack: impl Stack, f: StackCallFunc) {
     asm_may_unwind_root!(
         // DW_CFA_GNU_args_size 0
         cfi_reset_args_size_root!(),
-        concat!("call ", asm_mangle!("stack_call_trampoline")),
+        concat!("bl ", asm_mangle!("stack_call_trampoline")),
         "nop",
-        in("a0") arg,
-        in("a1") stack.base().get(),
-        in("a2") f,
+        in("$a0") arg,
+        in("$a1") stack.base().get(),
+        in("$a2") f,
         clobber_abi("C"),
-    )
+    );
 }
