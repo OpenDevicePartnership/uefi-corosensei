@@ -5,6 +5,10 @@
 ### [Documentation](https://docs.rs/corosensei/)
 ### [Changelog](CHANGELOG.md)
 
+## Deprecation Note
+
+This fork is now deprecated, as the necessary support for uefi targets has been upstreamed into corosensei as of release [v0.3.3](https://github.com/Amanieu/corosensei/releases/tag/v0.3.3).
+
 ## Fork Note
 
 This is a fork of the upstream corosensei code with changes to support UEFI code.
